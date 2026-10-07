@@ -12,7 +12,7 @@ Usage :
 import os
 import sqlite3
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 DB_PATH = os.environ.get("BIBLIO_DB", "biblio.db")
 LOAN_DAYS = 14
@@ -84,104 +84,151 @@ def list_books():
         )
         loan = cur.fetchone()
         status = "disponible" if loan is None else "emprunte"
-        print("[%d] %s (%s) : %s" % (book[0], book[1], book[2], status))
+        print(f"[{book[0]}] {book[1]} - {book[2]} ({status})")
     conn.close()
 
 
-def search_books(text):
+def search(text):
     conn = get_connection()
     cur = conn.cursor()
-    query = "SELECT id, title, author FROM books WHERE title LIKE '%" + text + "%'"
-    cur.execute(query)
-    rows = cur.fetchall()
+    pattern = f"%{text}%"
+    cur.execute(
+        """
+        SELECT id, title, author FROM books
+        WHERE title LIKE ? OR author LIKE ?
+        ORDER BY id
+        """,
+        (pattern, pattern),
+    )
+    books = cur.fetchall()
+    for book in books:
+        cur.execute(
+            "SELECT member_id FROM loans WHERE book_id = ? AND return_date IS NULL",
+            (book[0],),
+        )
+        loan = cur.fetchone()
+        status = "disponible" if loan is None else "emprunte"
+        print(f"[{book[0]}] {book[1]} - {book[2]} ({status})")
     conn.close()
-    if not rows:
-        print("Aucun livre trouve.")
-    for row in rows:
-        print("[%d] %s (%s)" % row)
-    return rows
 
 
-def borrow_book(book_id, member_id):
+def borrow(book_id, member_id):
     conn = get_connection()
     cur = conn.cursor()
+
+    # Verify book existence
     cur.execute("SELECT id FROM books WHERE id = ?", (book_id,))
     if cur.fetchone() is None:
+        print("Livre introuvable.")
         conn.close()
-        print("Erreur : livre %d introuvable." % book_id)
-        return False
+        return
+
+    # Verify member existence
+    cur.execute("SELECT id FROM members WHERE id = ?", (member_id,))
+    if cur.fetchone() is None:
+        print("Membre introuvable.")
+        conn.close()
+        return
+
+    # Prevent double loan
     cur.execute(
-        "INSERT INTO loans (book_id, member_id, loan_date) VALUES (?, ?, ?)",
-        (book_id, member_id, date.today().isoformat()),
+        "SELECT id FROM loans WHERE book_id = ? AND return_date IS NULL", (book_id,)
+    )
+    if cur.fetchone():
+        print("Le livre est déjà emprunté.")
+        conn.close()
+        return
+
+    loan_date = date.today().isoformat()
+    cur.execute(
+        """
+        INSERT INTO loans (book_id, member_id, loan_date, return_date)
+        VALUES (?, ?, ?, NULL)
+        """,
+        (book_id, member_id, loan_date),
     )
     conn.commit()
+    print(f"Emprunt du livre {book_id} enregistré pour le membre {member_id}.")
     conn.close()
-    print("Emprunt enregistre : livre %d, membre %d." % (book_id, member_id))
-    return True
 
 
 def return_book(book_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE loans SET return_date = ? WHERE book_id = ? AND return_date IS NULL",
-        (date.today().isoformat(), book_id),
+        "SELECT id FROM loans WHERE book_id = ? AND return_date IS NULL", (book_id,)
+    )
+    loan = cur.fetchone()
+    if not loan:
+        print("Ce livre n'est pas emprunté.")
+        conn.close()
+        return
+
+    return_date = date.today().isoformat()
+    cur.execute(
+        "UPDATE loans SET return_date = ? WHERE id = ?", (return_date, loan[0])
     )
     conn.commit()
+    print(f"Le livre {book_id} a été rendu.")
     conn.close()
-    print("Retour enregistre pour le livre %d." % book_id)
 
 
-def late():
-    c = get_connection()
-    x = c.cursor()
-    x.execute("SELECT * FROM loans")
-    r = []
-    for l in x.fetchall():
-        d = datetime.strptime(l[3], "%Y-%m-%d").date()
-        n = (date.today() - d).days
-        if n > LOAN_DAYS:
-            x2 = c.cursor()
-            x2.execute("SELECT title FROM books WHERE id = ?", (l[1],))
-            t = x2.fetchone()[0]
-            x2.execute("SELECT name FROM members WHERE id = ?", (l[2],))
-            m = x2.fetchone()
-            if m is None:
-                m = "?"
-            else:
-                m = m[0]
-            r.append((t, m, n - LOAN_DAYS))
-    c.close()
-    if len(r) == 0:
+def overdue():
+    conn = get_connection()
+    cur = conn.cursor()
+    cutoff = (date.today() - timedelta(days=LOAN_DAYS)).isoformat()
+    cur.execute(
+        """
+        SELECT loans.id, books.title, members.name, loans.loan_date
+        FROM loans
+        JOIN books ON loans.book_id = books.id
+        JOIN members ON loans.member_id = members.id
+        WHERE loans.return_date IS NULL AND loans.loan_date <= ?
+        ORDER BY loans.loan_date
+        """,
+        (cutoff,),
+    )
+    rows = cur.fetchall()
+    if not rows:
         print("Aucun retard.")
     else:
-        for i in r:
-            print("%s, emprunte par %s : %d jours de retard" % (i[0], i[1], i[2]))
-    return r
+        print("Livres en retard :")
+        for loan_id, title, member_name, loan_date in rows:
+            print(f"- [{loan_id}] {title} (emprunté par {member_name} le {loan_date})")
+    conn.close()
 
 
-def main(argv):
-    if len(argv) < 2:
-        print(__doc__)
-        return 1
-    command = argv[1]
-    if command == "init":
+def main():
+    if len(sys.argv) < 2:
+        print("Commande manquante.")
+        return
+
+    cmd = sys.argv[1]
+
+    if cmd == "init":
         init_db()
-    elif command == "livres":
+    elif cmd == "livres":
         list_books()
-    elif command == "chercher" and len(argv) == 3:
-        search_books(argv[2])
-    elif command == "emprunter" and len(argv) == 4:
-        borrow_book(int(argv[2]), int(argv[3]))
-    elif command == "rendre" and len(argv) == 3:
-        return_book(int(argv[2]))
-    elif command == "retards":
-        late()
+    elif cmd == "chercher":
+        if len(sys.argv) < 3:
+            print("Texte de recherche manquant.")
+            return
+        search(" ".join(sys.argv[2:]))
+    elif cmd == "emprunter":
+        if len(sys.argv) != 4:
+            print("Usage: python biblio.py emprunter <id_livre> <id_membre>")
+            return
+        borrow(int(sys.argv[2]), int(sys.argv[3]))
+    elif cmd == "rendre":
+        if len(sys.argv) != 3:
+            print("Usage: python biblio.py rendre <id_livre>")
+            return
+        return_book(int(sys.argv[2]))
+    elif cmd == "retards":
+        overdue()
     else:
-        print(__doc__)
-        return 1
-    return 0
+        print(f"Commande inconnue : {cmd}")
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    main()
