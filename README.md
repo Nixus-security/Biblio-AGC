@@ -25,8 +25,8 @@ Selon le système, la commande s'appelle `python`, `python3` (macOS et Linux) ou
 1. Récupérez le projet :
 
 ```bash
-git clone <URL-du-depot>
-cd <dossier-du-depot>
+git clone https://github.com/Nixus-security/Biblio-AGC.git
+cd Biblio-AGC
 ```
 
 2. Créez la base de données avec quelques livres et adhérents d'exemple :
