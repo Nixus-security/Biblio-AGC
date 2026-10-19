@@ -1,0 +1,16 @@
+# CODEOWNERS — Biblio-AGC
+# Chaque ligne associe un chemin à un ou plusieurs relecteurs obligatoires.
+# GitHub exige leur approbation avant tout merge vers main.
+# Syntaxe : <chemin_glob>  @owner1 @owner2
+
+# Relecteurs par défaut pour tout le dépôt (2 minimum)
+*                   @Nixus-security
+
+# Code principal : au moins un membre du groupe AGC
+biblio.py           @Nixus-security
+
+# Tests : idem
+tests/              @Nixus-security
+
+# Documentation et ADR
+docs/               @Nixus-security
